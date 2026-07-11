@@ -535,8 +535,41 @@ engine.generate_registered_gguf(store, id, prompt, max_tokens=256,
 engine.generate_chat_registered_gguf(store, id,
     [{"role": "user", "content": "..."}], max_tokens=256, ...)
 
+# 채팅 스트리밍 — 텍스트 조각마다 콜백 호출. 콜백이 False 를 반환하면 중단되고
+# 그때까지의 부분 텍스트가 반환된다 (None 등 다른 반환값은 계속 진행).
+engine.generate_chat_stream_registered_gguf(store, id, messages, on_delta,
+                                            max_tokens=256, ...)
+
 # 생성 — 파일 직접 지정 (레지스트리 없이 1회성)
 engine.generate_llama_gguf(weights_path, tokenizer_path, prompt, ...)
+```
+
+### 스트리밍 통합 레시피
+
+콜백이 원시 API 다. 서버 전송 이벤트(SSE)나 제너레이터가 필요하면 스레드 + 큐로 감싼다 —
+생성 루프는 GIL 을 해제한 채 돌고 콜백 호출 순간에만 GIL 을 잡으므로, 호스트 서비스와 자연스럽게 병행된다.
+
+```python
+import queue
+import threading
+
+def stream_chat(messages):
+    """토큰 조각을 순서대로 내놓는 제너레이터 (FastAPI StreamingResponse 등에 직결)."""
+    q: queue.Queue = queue.Queue()
+    done = object()
+
+    def worker():
+        try:
+            engine.generate_chat_stream_registered_gguf(
+                "./models", "qwen3-4b", messages,
+                lambda delta: q.put(delta) or True,
+            )
+        finally:
+            q.put(done)
+
+    threading.Thread(target=worker, daemon=True).start()
+    while (item := q.get()) is not done:
+        yield item
 ```
 
 ### 호스트 서비스를 멈추지 않는다 — GIL 해제

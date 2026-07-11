@@ -7,7 +7,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use rust_ai_serving_engine_core::{
     DevicePreference, GenerationConfig, HuggingFaceHub, ModelKind, ModelRegistry, RuntimeDevice,
-    generate,
+    generate, generate_with,
 };
 use rust_ai_serving_engine_models::{ChatMessage, LlamaGgufDecoder, LocalTokenizer, SessionCache};
 
@@ -44,6 +44,21 @@ fn parse_device_preference(device: &str) -> PyResult<DevicePreference> {
             "device must be one of 'auto', 'cpu', 'cuda', or 'metal'",
         )),
     }
+}
+
+fn parse_chat_messages(messages: Vec<HashMap<String, String>>) -> PyResult<Vec<ChatMessage>> {
+    messages
+        .into_iter()
+        .map(|mut message| {
+            let role = message
+                .remove("role")
+                .ok_or_else(|| PyRuntimeError::new_err("every chat message needs a 'role' key"))?;
+            let content = message.remove("content").ok_or_else(|| {
+                PyRuntimeError::new_err("every chat message needs a 'content' key")
+            })?;
+            Ok(ChatMessage { role, content })
+        })
+        .collect()
 }
 
 /// Registers a local GGUF or Safetensors file and returns its TOML manifest.
@@ -267,18 +282,7 @@ fn generate_chat_registered_gguf(
     device: &str,
 ) -> PyResult<String> {
     let device = parse_device_preference(device)?;
-    let messages: Vec<ChatMessage> = messages
-        .into_iter()
-        .map(|mut message| {
-            let role = message
-                .remove("role")
-                .ok_or_else(|| PyRuntimeError::new_err("every chat message needs a 'role' key"))?;
-            let content = message.remove("content").ok_or_else(|| {
-                PyRuntimeError::new_err("every chat message needs a 'content' key")
-            })?;
-            Ok(ChatMessage { role, content })
-        })
-        .collect::<PyResult<_>>()?;
+    let messages = parse_chat_messages(messages)?;
     py.allow_threads(|| {
         let registry = ModelRegistry::open(store).map_err(python_error)?;
         let session = session_cache()
@@ -316,6 +320,129 @@ fn generate_chat_registered_gguf(
     })
 }
 
+/// Streams a chat completion through a registered GGUF model bundle.
+///
+/// `on_delta` is called with each printable text fragment as it is decoded.
+/// Returning `False` from the callback cancels generation; any other return
+/// value (including `None`) continues it. Exceptions raised by the callback
+/// also cancel generation and propagate to the caller. Returns the full text
+/// generated so far, so a cancelled call yields the partial answer.
+///
+/// The generation loop runs with the GIL released; the GIL is re-acquired
+/// only for the duration of each callback invocation.
+#[pyfunction]
+#[pyo3(signature = (store, id, messages, on_delta, max_tokens=256, temperature=0.7, top_k=Some(40), seed=0, device="auto"))]
+#[allow(clippy::too_many_arguments)]
+fn generate_chat_stream_registered_gguf(
+    py: Python<'_>,
+    store: &str,
+    id: &str,
+    messages: Vec<HashMap<String, String>>,
+    on_delta: Py<PyAny>,
+    max_tokens: usize,
+    temperature: f32,
+    top_k: Option<usize>,
+    seed: u64,
+    device: &str,
+) -> PyResult<String> {
+    let device = parse_device_preference(device)?;
+    let messages = parse_chat_messages(messages)?;
+    py.allow_threads(|| {
+        let registry = ModelRegistry::open(store).map_err(python_error)?;
+        let session = session_cache()
+            .get_or_load(&registry, id, device)
+            .map_err(python_error)?;
+        let mut session = session.lock().unwrap_or_else(PoisonError::into_inner);
+        let template = session.chat_template.ok_or_else(|| {
+            PyRuntimeError::new_err(
+                "no chat template is known for this model; \
+                 set chat_template in its manifest (chatml, llama3, or mistral)",
+            )
+        })?;
+        let prompt = template.render(&messages).map_err(python_error)?;
+        // The template spells out every special token itself.
+        let prompt_tokens = session
+            .tokenizer
+            .encode(&prompt, false)
+            .map_err(python_error)?;
+        let config = with_eos(
+            GenerationConfig {
+                max_tokens,
+                temperature,
+                top_k,
+                seed,
+                stop_tokens: Vec::new(),
+            },
+            session.eos_token,
+        );
+
+        // Reborrow as a plain reference so decoder/tokenizer field borrows split.
+        let session = &mut *session;
+        let decoder = session.decoder.as_mut();
+        let tokenizer = &session.tokenizer;
+        let mut tokens: Vec<u32> = Vec::new();
+        let mut emitted = 0usize;
+        let mut callback_error: Option<PyErr> = None;
+        let mut decode_error: Option<rust_ai_serving_engine_core::EngineError> = None;
+
+        // Delivers `delta` to the Python callback. Ok(true) = keep generating.
+        // Only an explicit `False` return cancels; `None` and others continue.
+        let emit = |delta: &str| -> PyResult<bool> {
+            Python::with_gil(|py| {
+                let value = on_delta.call1(py, (delta,))?;
+                Ok(value.extract::<bool>(py).unwrap_or(true))
+            })
+        };
+
+        generate_with(
+            decoder,
+            &prompt_tokens,
+            &config,
+            || false,
+            |token| {
+                tokens.push(token);
+                let full = match tokenizer.decode(&tokens, true) {
+                    Ok(full) => full,
+                    Err(error) => {
+                        decode_error = Some(error);
+                        return false;
+                    }
+                };
+                // An incomplete UTF-8 sequence at the tail means the next
+                // token carries the rest of the character; wait for it.
+                if full.ends_with('\u{FFFD}') {
+                    return true;
+                }
+                if full.len() > emitted {
+                    let delta = full[emitted..].to_owned();
+                    emitted = full.len();
+                    return match emit(&delta) {
+                        Ok(keep_going) => keep_going,
+                        Err(error) => {
+                            callback_error = Some(error);
+                            false
+                        }
+                    };
+                }
+                true
+            },
+        )
+        .map_err(python_error)?;
+
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        if let Some(error) = decode_error {
+            return Err(python_error(error));
+        }
+        let text = tokenizer.decode(&tokens, true).map_err(python_error)?;
+        if text.len() > emitted {
+            emit(&text[emitted..])?;
+        }
+        Ok(text)
+    })
+}
+
 /// Drops every cached model session, releasing their memory.
 #[pyfunction]
 fn unload_models() -> PyResult<()> {
@@ -346,6 +473,10 @@ fn rust_ai_serving_engine(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(generate_llama_gguf, module)?)?;
     module.add_function(wrap_pyfunction!(generate_registered_gguf, module)?)?;
     module.add_function(wrap_pyfunction!(generate_chat_registered_gguf, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        generate_chat_stream_registered_gguf,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(unload_models, module)?)?;
     Ok(())
 }

@@ -4,12 +4,15 @@ build-backend = "maturin"
 
 [project]
 name = "rust_ai_serving_engine"
-description = "Rust local AI model runtime with model registry, integrity verification, and Candle device probing."
+description = "Local GGUF model serving engine (pure-Rust Candle) — chat-template generation, token streaming, session cache, and an OpenAI-compatible API with a Python binding."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.9"
-authors = [{ name = "rust_ai_serving_engine contributors" }]
-keywords = ["rust", "ai", "llm", "candle", "gguf", "inference", "local-model"]
+authors = [{ name = "arabangoo" }]
+keywords = [
+    "rust", "ai", "llm", "candle", "gguf", "inference", "local-model",
+    "qwen", "llama", "mistral", "chat", "streaming", "openai-compatible", "offline",
+]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
