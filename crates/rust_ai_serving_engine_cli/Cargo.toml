@@ -1,0 +1,18 @@
+[package]
+name = "rust-ai-serving-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI for the rust_ai_serving_engine local model runtime"
+
+[[bin]]
+name = "rust-ai-serving-engine"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+rust-ai-serving-engine-core = { path = "../rust_ai_serving_engine_core" }
+rust-ai-serving-engine-api = { path = "../rust_ai_serving_engine_api" }
+toml.workspace = true
+tokio.workspace = true

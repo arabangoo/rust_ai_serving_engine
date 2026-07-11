@@ -1,0 +1,22 @@
+[package]
+name = "rust-ai-serving-engine-python"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PyO3 bindings for rust_ai_serving_engine"
+readme = "../../README.md"
+
+[lib]
+name = "rust_ai_serving_engine"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+python = ["dep:pyo3"]
+
+[dependencies]
+pyo3 = { workspace = true, optional = true }
+rust-ai-serving-engine-core = { path = "../rust_ai_serving_engine_core" }
+rust-ai-serving-engine-models = { path = "../rust_ai_serving_engine_models" }
+toml.workspace = true

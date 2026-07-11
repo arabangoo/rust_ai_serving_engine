@@ -1,0 +1,19 @@
+[package]
+name = "rust-ai-serving-engine-models"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Candle-backed local model adapters for rust_ai_serving_engine"
+
+[features]
+default = ["cpu"]
+cpu = []
+cuda = ["rust-ai-serving-engine-core/cuda", "candle-core/cuda"]
+metal = ["rust-ai-serving-engine-core/metal", "candle-core/metal"]
+
+[dependencies]
+candle-core.workspace = true
+candle-transformers.workspace = true
+rust-ai-serving-engine-core = { path = "../rust_ai_serving_engine_core" }
+tokenizers.workspace = true

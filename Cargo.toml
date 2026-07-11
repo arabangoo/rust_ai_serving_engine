@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/rust_ai_serving_engine_core",
+    "crates/rust_ai_serving_engine_models",
+    "crates/rust_ai_serving_engine_api",
+    "crates/rust_ai_serving_engine_cli",
+    "crates/rust_ai_serving_engine_python",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/arabangoo/rust_ai_serving_engine"
+
+[workspace.dependencies]
+candle-core = { version = "0.11", default-features = false }
+candle-transformers = { version = "0.11", default-features = false }
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+hf-hub = { version = "0.5", default-features = false, features = ["ureq", "rustls-tls"] }
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+toml = "0.8"
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync"] }
+tokio-stream = "0.1"
