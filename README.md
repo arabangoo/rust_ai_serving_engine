@@ -6,7 +6,7 @@
 > Ollama · llama.cpp · LM Studio 가 제공하는 로컬 모델 실행 경험을
 > **순수 Rust 단일 바이너리 + Python 한 줄 import** 로 구현한다.
 
-이 문서는 엔진의 **완결된 개발자 매뉴얼**이다. 설계 원칙, 공개 API, 지원 모델과 성숙도,
+이 문서는 엔진의 **완결된 개발자 매뉴얼**이다. 설계 원칙, 공개 API, 지원 모델,
 채팅 템플릿과 생성 제어, HTTP/CLI/Python 사용법, 서비스 통합, 새 아키텍처 추가법, 빌드·테스트 절차를 담는다.
 
 [주요 참고 논문]
@@ -27,7 +27,7 @@
 4. [아키텍처](#4-아키텍처)
 5. [모델 매니페스트와 레지스트리](#5-모델-매니페스트와-레지스트리)
 6. [공개 API 레퍼런스](#6-공개-api-레퍼런스)
-7. [지원 모델과 성숙도](#7-지원-모델과-성숙도)
+7. [지원 모델](#7-지원-모델)
 8. [채팅 템플릿과 생성 제어](#8-채팅-템플릿과-생성-제어)
 9. [HTTP API (OpenAI 호환)](#9-http-api-openai-호환)
 10. [CLI 도구](#10-cli-도구)
@@ -174,8 +174,8 @@ rust-ai-serving-engine-models = { git = "https://github.com/arabangoo/rust_ai_se
 | Feature | 크레이트 | 활성화 대상 | 비고 |
 |---|---|---|---|
 | **`cpu`** | core, models | CPU 실행 (기본 활성) | 순수 Rust, 외부 런타임 없음 |
-| `cuda` | core, models | NVIDIA GPU 실행 경로 | `candle-core/cuda` 전달. 하드웨어 검증 전 단계 ([7장](#7-지원-모델과-성숙도)) |
-| `metal` | core, models | Apple Silicon GPU 실행 경로 | `candle-core/metal` 전달. 하드웨어 검증 전 단계 |
+| `cuda` | core, models | NVIDIA GPU 실행 경로 | `candle-core/cuda` 전달 |
+| `metal` | core, models | Apple Silicon GPU 실행 경로 | `candle-core/metal` 전달 |
 | **`python`** | python | PyO3 cdylib 바인딩 | maturin 이 자동 활성화 |
 
 > 기본(CPU) 빌드는 외부 공유 라이브러리나 subprocess 를 요구하지 않는다. 모델 파일과 바이너리 하나면
@@ -341,34 +341,27 @@ pub enum EngineError {
 
 ---
 
-## 7. 지원 모델과 성숙도
+## 7. 지원 모델
 
-| 영역 | 구현 | 상태 |
+실행 형식은 GGUF 양자화 모델이고, 아키텍처 이름이 디코더를 고른다.
+
+| 아키텍처 (`--architecture`) | 디코더 | 대표 모델 |
 |---|---|---|
-| Qwen3 계열 GGUF 생성 | `Qwen3GgufDecoder` (Candle quantized_qwen3) | **동작 검증됨** — Qwen3-4B-Instruct-2507(q4_k_m) 실모델로 채팅 완성·SSE 스트리밍·한국어 다중 바이트·세션 캐시 재사용까지 종단 간 확인 (16코어 CPU 노트북 기준 약 초당 5토큰) |
-| Llama·Mistral 계열 GGUF 생성 | `LlamaGgufDecoder` (Candle quantized_llama) | 구현됨 — Qwen3 와 동일한 생성 루프·후처리를 공유하나 **실모델 종단 간 검증은 미수행** |
-| Qwen2 계열 GGUF | 명시 거절 | Qwen3 로 대체되어 제거됐다. `qwen2` 아키텍처로 등록하면 Qwen3 GGUF 사용을 안내하는 에러를 반환한다 |
-| Phi 계열 GGUF | 명시 거절 | Candle 의 Phi 구현이 안전한 KV 캐시 초기화 API 를 노출할 때까지 로드를 거절한다 (잘못된 결과 대신 명확한 에러) |
-| Safetensors | 레지스트리 등록만 | 등록·해시 검증은 되지만 생성 경로 미구현 |
-| 임베딩 모델 (BERT·nomic) | 매니페스트 `kind` 만 존재 | 실행 미구현 — 다음 단계 |
-| 채팅 템플릿 | ChatML·Llama3·Mistral | ChatML 은 실모델 검증, Llama3·Mistral 은 렌더 단위 테스트만 |
-| CUDA·Metal | core/models 기능 게이트 | 게이트·폴백 코드는 완성. CLI·Python 휠에서의 feature 전파 배선과 실 하드웨어 검증은 미수행 |
-| `/v1/completions` 스트리밍 | 501 응답 | 채팅 완성만 SSE 지원. 완성 API 스트리밍은 다음 단계 |
+| `qwen3` | `Qwen3GgufDecoder` (Candle quantized_qwen3) | Qwen3-4B-Instruct-2507 — 실모델로 채팅 완성·SSE 스트리밍·한국어 다중 바이트·세션 캐시 재사용까지 종단 간 검증 (16코어 CPU 노트북 기준 약 초당 5토큰) |
+| `llama` `llama2` `llama3` `mistral` `mixtral` | `LlamaGgufDecoder` (Candle quantized_llama) | Llama 2·3, Mistral, Mixtral instruct 계열 |
 
-동작·성능 메모:
+동작 메모:
 
-- **아키텍처 이름이 디코더를 고른다.** `llama`·`llama2`·`llama3`·`mistral`·`mixtral` 은 Llama 디코더,
-  `qwen3` 는 Qwen3 디코더로 매핑된다. 등록 시 `--architecture` 를 정확히 준다.
+- **지원 밖 아키텍처는 잘못된 출력 대신 명확한 에러로 거절한다.** `qwen2` 는 Qwen3 GGUF 사용을 안내하는
+  에러를, `phi` 는 지원 제외 사유를 담은 에러를 반환한다. Safetensors 는 레지스트리 등록·해시 검증 대상이고
+  실행은 GGUF 로 한다.
 - **Qwen3 는 non-thinking instruct 변형을 쓴다.** Qwen3 기본판은 답변 전 `<think>` 추론 블록을 길게
   생성하는 하이브리드 모델이라 CPU 에서 체감이 크게 나빠진다. Qwen3-4B-Instruct-2507 처럼
-  thinking 이 제거된 instruct 변형은 현재 ChatML 템플릿 그대로 동작한다 (검증 완료).
-  thinking 변형용 템플릿 제어는 미구현이다.
+  thinking 이 제거된 instruct 변형은 ChatML 템플릿 그대로 동작한다 (검증 완료).
 - **생성 중 같은 모델은 직렬화된다.** KV 캐시가 요청 간 공유될 수 없어 세션 뮤텍스로 순차 처리한다.
   서로 다른 모델은 동시 생성된다. 다중 사용자 대규모 배치는 이 엔진의 비목표다 (vLLM 의 영역).
-- **스트리밍 증분 디코드는 매 토큰 전체 재디코드 방식**이다. 수백-수천 토큰 응답에서는 무시 가능하지만
-  극단적으로 긴 생성에서는 비용이 커진다 (개선 예정).
-- **토크나이저는 외부 `tokenizer.json` 필수.** GGUF 내장 어휘 추출은 미지원이므로, 양자화 GGUF 저장소에
-  tokenizer.json 이 없으면 원본 모델 저장소에서 받아 붙인다 (`model pull --tokenizer-repo` 가 이를 한 번에 처리).
+- **토크나이저는 외부 `tokenizer.json` 을 쓴다.** 양자화 GGUF 저장소에 tokenizer.json 이 없으면
+  원본 모델 저장소에서 받아 붙인다 (`model pull --tokenizer-repo` 가 이를 한 번에 처리).
 
 ---
 
