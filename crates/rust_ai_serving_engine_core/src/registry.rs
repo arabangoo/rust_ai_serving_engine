@@ -208,7 +208,7 @@ mod tests {
                 "fixture-model",
                 &model_path,
                 ModelKind::Generator,
-                Some("qwen2".to_owned()),
+                Some("qwen3".to_owned()),
                 Some(8192),
                 Some("chatml".to_owned()),
             )

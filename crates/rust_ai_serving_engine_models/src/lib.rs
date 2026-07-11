@@ -1,18 +1,18 @@
 //! Candle-backed adapters for locally stored model weights.
 //!
-//! The first adapter targets GGUF files compatible with Candle's quantized
-//! Llama decoder. This includes the common Llama and Mistral GGUF layouts.
-//! Qwen2-compatible GGUF files use Candle's quantized Qwen2 decoder.
+//! The Llama adapter targets GGUF files compatible with Candle's quantized
+//! Llama decoder, which covers the common Llama and Mistral GGUF layouts.
+//! Qwen3-compatible GGUF files use Candle's quantized Qwen3 decoder.
 
 mod chat;
 mod llama_gguf;
-mod qwen2_gguf;
+mod qwen3_gguf;
 mod session;
 mod tokenizer;
 
 pub use chat::{ChatMessage, ChatTemplate};
 pub use llama_gguf::{LlamaGgufAdapter, LlamaGgufDecoder};
-pub use qwen2_gguf::{Qwen2GgufAdapter, Qwen2GgufDecoder};
+pub use qwen3_gguf::{Qwen3GgufAdapter, Qwen3GgufDecoder};
 pub use session::{ModelSession, SessionCache};
 pub use tokenizer::LocalTokenizer;
 
@@ -31,9 +31,11 @@ pub fn load_gguf_decoder(
         "llama" | "llama2" | "llama3" | "llama-gguf" | "mistral" | "mixtral" => {
             Ok(Box::new(LlamaGgufDecoder::load(weights, runtime)?))
         }
-        "qwen" | "qwen2" | "qwen2.5" | "qwen2-gguf" => {
-            Ok(Box::new(Qwen2GgufDecoder::load(weights, runtime)?))
-        }
+        "qwen3" | "qwen3-gguf" => Ok(Box::new(Qwen3GgufDecoder::load(weights, runtime)?)),
+        "qwen" | "qwen2" | "qwen2.5" | "qwen2-gguf" => Err(EngineError::UnsupportedArchitecture(
+            "Qwen2 support was replaced by Qwen3; use a Qwen3 GGUF (architecture 'qwen3')"
+                .to_owned(),
+        )),
         "phi" | "phi2" | "phi3" | "phi4" => Err(EngineError::UnsupportedArchitecture(
             "Phi GGUF is not yet enabled because Candle's Phi variants do not expose a safe KV-cache reset API".to_owned(),
         )),

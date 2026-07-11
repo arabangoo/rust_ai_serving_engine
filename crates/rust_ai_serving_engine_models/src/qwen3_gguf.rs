@@ -5,20 +5,20 @@ use std::{
 };
 
 use candle_core::{Tensor, quantized::gguf_file};
-use candle_transformers::models::quantized_qwen2::ModelWeights;
+use candle_transformers::models::quantized_qwen3::ModelWeights;
 use rust_ai_serving_engine_core::{
     EngineError, ModelAdapter, ModelFormat, Result, RuntimeDevice, TokenDecoder,
 };
 
 use crate::gguf_eos_token;
 
-/// Qwen2 GGUF adapter backed by Candle's quantized Qwen2 implementation.
+/// Qwen3 GGUF adapter backed by Candle's quantized Qwen3 implementation.
 #[derive(Debug, Default)]
-pub struct Qwen2GgufAdapter;
+pub struct Qwen3GgufAdapter;
 
-impl ModelAdapter for Qwen2GgufAdapter {
+impl ModelAdapter for Qwen3GgufAdapter {
     fn architecture(&self) -> &'static str {
-        "qwen2-gguf"
+        "qwen3-gguf"
     }
 
     fn supports_format(&self, format: ModelFormat) -> bool {
@@ -26,15 +26,15 @@ impl ModelAdapter for Qwen2GgufAdapter {
     }
 }
 
-/// Stateful Qwen2 decoder with a Candle-owned KV cache.
-pub struct Qwen2GgufDecoder {
+/// Stateful Qwen3 decoder with a Candle-owned KV cache.
+pub struct Qwen3GgufDecoder {
     model: ModelWeights,
     device: candle_core::Device,
     next_position: usize,
     eos_token: Option<u32>,
 }
 
-impl Qwen2GgufDecoder {
+impl Qwen3GgufDecoder {
     pub fn load(path: impl AsRef<Path>, runtime: &RuntimeDevice) -> Result<Self> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
@@ -76,7 +76,7 @@ impl Qwen2GgufDecoder {
     }
 }
 
-impl TokenDecoder for Qwen2GgufDecoder {
+impl TokenDecoder for Qwen3GgufDecoder {
     fn prefill(&mut self, prompt: &[u32]) -> Result<Vec<f32>> {
         self.clear_cache();
         let logits = self.forward_tokens(prompt, 0)?;

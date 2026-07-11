@@ -39,7 +39,7 @@ impl ChatTemplate {
     /// Falls back to the conventional template for a registered architecture.
     pub fn for_architecture(architecture: &str) -> Option<Self> {
         match architecture.to_ascii_lowercase().as_str() {
-            "qwen" | "qwen2" | "qwen2.5" | "qwen2-gguf" | "qwen3" => Some(Self::ChatMl),
+            "qwen3" | "qwen3-gguf" => Some(Self::ChatMl),
             "llama3" => Some(Self::Llama3),
             "llama" | "llama2" | "llama-gguf" | "mistral" | "mixtral" => {
                 Some(Self::MistralInstruct)
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn architecture_fallback_matches_known_families() {
         assert_eq!(
-            ChatTemplate::for_architecture("qwen2"),
+            ChatTemplate::for_architecture("qwen3"),
             Some(ChatTemplate::ChatMl)
         );
         assert_eq!(

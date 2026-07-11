@@ -13,7 +13,7 @@
 
 1. Attention Is All You Need (Transformer 구조의 원전) - https://arxiv.org/abs/1706.03762
 2. LLaMA: Open and Efficient Foundation Language Models (Llama 계열 디코더 구조) - https://arxiv.org/abs/2302.13971
-3. Qwen2 Technical Report (실모델 종단 간 검증에 사용한 Qwen2 계열) - https://arxiv.org/abs/2407.10671
+3. Qwen3 Technical Report (실모델 종단 간 검증에 사용한 Qwen3 계열) - https://arxiv.org/abs/2505.09388
 4. The Case for 4-bit Precision: k-bit Inference Scaling Laws (4비트 양자화 추론의 근거) - https://arxiv.org/abs/2212.09720
 5. Efficient Memory Management for Large Language Model Serving with PagedAttention (LLM 서빙과 KV 캐시 관리) - https://arxiv.org/abs/2309.06180
 
@@ -79,11 +79,11 @@ cargo build --release
 
 # 1) Hugging Face 에서 가중치 + tokenizer.json 을 받아 실행 가능한 번들로 등록
 ./target/release/rust-ai-serving-engine model pull \
-  --repo Qwen/Qwen2.5-0.5B-Instruct-GGUF \
-  --file qwen2.5-0.5b-instruct-q4_k_m.gguf \
-  --id qwen05b \
-  --architecture qwen2 \
-  --tokenizer-repo Qwen/Qwen2.5-0.5B-Instruct \
+  --repo unsloth/Qwen3-4B-Instruct-2507-GGUF \
+  --file Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
+  --id qwen3-4b \
+  --architecture qwen3 \
+  --tokenizer-repo Qwen/Qwen3-4B-Instruct-2507 \
   --tokenizer-file tokenizer.json
 
 # 2) OpenAI 호환 서버 기동
@@ -94,7 +94,7 @@ cargo build --release
 # 3) 어떤 OpenAI 클라이언트로든 대화 (스트리밍은 "stream": true)
 curl -s http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "qwen05b", "messages": [{"role": "user", "content": "안녕?"}]}'
+  -d '{"model": "qwen3-4b", "messages": [{"role": "user", "content": "안녕?"}]}'
 ```
 
 ### Python
@@ -103,13 +103,13 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
 import rust_ai_serving_engine as engine
 
 # 등록 (최초 1회) — 가중치 다운로드 + 로컬 tokenizer.json 연결
-engine.pull_model("./models", "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
-                  "qwen2.5-0.5b-instruct-q4_k_m.gguf", "qwen05b", architecture="qwen2")
-engine.attach_tokenizer("./models", "qwen05b", "./tokenizer.json")
+engine.pull_model("./models", "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+                  "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", "qwen3-4b", architecture="qwen3")
+engine.attach_tokenizer("./models", "qwen3-4b", "./tokenizer.json")
 
 # 대화 — 채팅 템플릿·종료 토큰 자동 적용, 모델은 프로세스 캐시에 상주
 answer = engine.generate_chat_registered_gguf(
-    "./models", "qwen05b",
+    "./models", "qwen3-4b",
     [{"role": "user", "content": "한 문장으로 자기소개 해줘."}],
     max_tokens=64,
 )
@@ -127,7 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cache = SessionCache::new();
 
     // 최초 호출: 해시 검증 + 로드 / 이후: 메모리 상주 세션 재사용
-    let session = cache.get_or_load(&registry, "qwen05b", DevicePreference::Auto)?;
+    let session = cache.get_or_load(&registry, "qwen3-4b", DevicePreference::Auto)?;
     let mut session = session.lock().unwrap();
 
     let template = session.chat_template.expect("chat template resolved from manifest");
@@ -164,7 +164,7 @@ rust-ai-serving-engine-models = { git = "https://github.com/arabangoo/rust_ai_se
 | 크레이트 | 역할 | 주요 의존 |
 |---|---|---|
 | `rust_ai_serving_engine_core` | 매니페스트·레지스트리·생성 루프·샘플러·장치 선택·에러 계약 | `candle-core`, `hf-hub`, `sha2` |
-| `rust_ai_serving_engine_models` | GGUF 디코더(Llama·Qwen2)·토크나이저·채팅 템플릿·세션 캐시 | `candle-transformers`, `tokenizers` |
+| `rust_ai_serving_engine_models` | GGUF 디코더(Llama·Qwen3)·토크나이저·채팅 템플릿·세션 캐시 | `candle-transformers`, `tokenizers` |
 | `rust_ai_serving_engine_api` | OpenAI 호환 HTTP API 와 SSE 스트리밍 | `axum`, `tokio` |
 | `rust_ai_serving_engine_cli` | `model`·`runtime`·`serve` 명령줄 (바이너리명 `rust-ai-serving-engine`) | `clap` |
 | `rust_ai_serving_engine_python` | PyO3 확장 모듈 (모듈명 `rust_ai_serving_engine`) | `pyo3`(abi3) |
@@ -210,15 +210,15 @@ rust-ai-serving-engine-models = { git = "https://github.com/arabangoo/rust_ai_se
 모델 저장소(store)는 폴더 하나다. `manifests/` 아래 모델당 TOML 파일 하나가 기록된다.
 
 ```toml
-id = "qwen05b"
+id = "qwen3-4b"
 kind = "generator"                 # generator | embedding
 format = "gguf"                    # gguf | safetensors
 weights = "<가중치 파일 절대 경로>"
 sha256 = "<가중치 SHA-256>"
 tokenizer = "<tokenizer.json 절대 경로>"
 tokenizer_sha256 = "<토크나이저 SHA-256>"
-architecture = "qwen2"
-context_length = 32768
+architecture = "qwen3"
+context_length = 262144
 chat_template = "chatml"           # chatml | llama3 | mistral (생략 시 아키텍처 기본값)
 ```
 
@@ -306,7 +306,7 @@ fn clear(&self)                            // 전체 언로드 (메모리 해제
 load_gguf_decoder(architecture, weights, &runtime) -> Result<Box<dyn TokenDecoder>>
 
 LlamaGgufDecoder::load(path, &runtime) -> Result<Self>   // Llama·Mistral 호환 GGUF
-Qwen2GgufDecoder::load(path, &runtime) -> Result<Self>   // Qwen2 호환 GGUF
+Qwen3GgufDecoder::load(path, &runtime) -> Result<Self>   // Qwen3 호환 GGUF
 
 LocalTokenizer::from_file(path) -> Result<Self>           // Hugging Face tokenizer.json
 fn encode(&self, text, add_special_tokens: bool) -> Result<Vec<u32>>
@@ -345,8 +345,9 @@ pub enum EngineError {
 
 | 영역 | 구현 | 상태 |
 |---|---|---|
-| Qwen2 계열 GGUF 생성 | `Qwen2GgufDecoder` (Candle quantized_qwen2) | **동작 검증됨** — Qwen2.5-0.5B-Instruct(q4_k_m) 실모델로 채팅 완성·SSE 스트리밍·stop 문자열·한국어 다중 바이트·세션 캐시 재사용까지 종단 간 확인 |
-| Llama·Mistral 계열 GGUF 생성 | `LlamaGgufDecoder` (Candle quantized_llama) | 구현됨 — Qwen2 와 동일한 생성 루프·후처리를 공유하나 **실모델 종단 간 검증은 미수행** |
+| Qwen3 계열 GGUF 생성 | `Qwen3GgufDecoder` (Candle quantized_qwen3) | **동작 검증됨** — Qwen3-4B-Instruct-2507(q4_k_m) 실모델로 채팅 완성·SSE 스트리밍·한국어 다중 바이트·세션 캐시 재사용까지 종단 간 확인 (16코어 CPU 노트북 기준 약 초당 5토큰) |
+| Llama·Mistral 계열 GGUF 생성 | `LlamaGgufDecoder` (Candle quantized_llama) | 구현됨 — Qwen3 와 동일한 생성 루프·후처리를 공유하나 **실모델 종단 간 검증은 미수행** |
+| Qwen2 계열 GGUF | 명시 거절 | Qwen3 로 대체되어 제거됐다. `qwen2` 아키텍처로 등록하면 Qwen3 GGUF 사용을 안내하는 에러를 반환한다 |
 | Phi 계열 GGUF | 명시 거절 | Candle 의 Phi 구현이 안전한 KV 캐시 초기화 API 를 노출할 때까지 로드를 거절한다 (잘못된 결과 대신 명확한 에러) |
 | Safetensors | 레지스트리 등록만 | 등록·해시 검증은 되지만 생성 경로 미구현 |
 | 임베딩 모델 (BERT·nomic) | 매니페스트 `kind` 만 존재 | 실행 미구현 — 다음 단계 |
@@ -357,7 +358,11 @@ pub enum EngineError {
 동작·성능 메모:
 
 - **아키텍처 이름이 디코더를 고른다.** `llama`·`llama2`·`llama3`·`mistral`·`mixtral` 은 Llama 디코더,
-  `qwen`·`qwen2`·`qwen2.5` 는 Qwen2 디코더로 매핑된다. 등록 시 `--architecture` 를 정확히 준다.
+  `qwen3` 는 Qwen3 디코더로 매핑된다. 등록 시 `--architecture` 를 정확히 준다.
+- **Qwen3 는 non-thinking instruct 변형을 쓴다.** Qwen3 기본판은 답변 전 `<think>` 추론 블록을 길게
+  생성하는 하이브리드 모델이라 CPU 에서 체감이 크게 나빠진다. Qwen3-4B-Instruct-2507 처럼
+  thinking 이 제거된 instruct 변형은 현재 ChatML 템플릿 그대로 동작한다 (검증 완료).
+  thinking 변형용 템플릿 제어는 미구현이다.
 - **생성 중 같은 모델은 직렬화된다.** KV 캐시가 요청 간 공유될 수 없어 세션 뮤텍스로 순차 처리한다.
   서로 다른 모델은 동시 생성된다. 다중 사용자 대규모 배치는 이 엔진의 비목표다 (vLLM 의 영역).
 - **스트리밍 증분 디코드는 매 토큰 전체 재디코드 방식**이다. 수백-수천 토큰 응답에서는 무시 가능하지만
@@ -375,7 +380,7 @@ instruct 모델은 학습 때 쓰인 대화 마크업을 그대로 재현해야 
 ### 템플릿 선택 규칙
 
 1. 매니페스트의 `chat_template` 값(`chatml` | `llama3` | `mistral`)이 있으면 그것을 쓴다.
-2. 없으면 아키텍처 기본값 — `qwen*` → ChatML, `llama3` → Llama3, `llama`·`llama2`·`mistral`·`mixtral` → Mistral `[INST]`.
+2. 없으면 아키텍처 기본값 — `qwen3` → ChatML, `llama3` → Llama3, `llama`·`llama2`·`mistral`·`mixtral` → Mistral `[INST]`.
 3. 어느 쪽도 없으면 채팅 요청을 거절한다 (완성 API 는 템플릿 없이 동작).
 
 | 템플릿 | 마크업 | 대상 |
@@ -423,7 +428,7 @@ OpenAI 호환 `stop`(문자열 하나 또는 배열)을 지원한다. 생성 텍
 curl -s http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen05b",
+    "model": "qwen3-4b",
     "messages": [
       {"role": "system", "content": "You are a concise assistant."},
       {"role": "user", "content": "What is the capital of France?"}
@@ -445,7 +450,7 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
 ```bash
 curl -sN http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "qwen05b", "messages": [{"role": "user", "content": "Count to 5."}], "stream": true}'
+  -d '{"model": "qwen3-4b", "messages": [{"role": "user", "content": "Count to 5."}], "stream": true}'
 ```
 
 ### 요청 파라미터
@@ -516,7 +521,7 @@ engine.pull_model(store, repo, file, id, kind="generator",
                   architecture=None, context_length=None, chat_template=None)
 engine.import_model(store, path, id, ...)           # 로컬 파일 등록 (인자 동일)
 engine.attach_tokenizer(store, id, tokenizer_path)
-engine.list_models(store)                           # ["qwen05b", ...]
+engine.list_models(store)                           # ["qwen3-4b", ...]
 engine.inspect_model(store, id)                     # 매니페스트 TOML 문자열
 engine.verify_model(store, id)                      # 해시 재검증
 engine.unload_models()                              # 프로세스 캐시 전체 해제
@@ -567,7 +572,7 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
 out = client.chat.completions.create(
-    model="qwen05b",
+    model="qwen3-4b",
     messages=[{"role": "user", "content": "요약해줘: ..."}],
     stream=True,
 )
@@ -575,7 +580,7 @@ for chunk in out:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
-LangChain 도 같은 방식이다 — `ChatOpenAI(base_url="http://127.0.0.1:8080/v1", model="qwen05b")`.
+LangChain 도 같은 방식이다 — `ChatOpenAI(base_url="http://127.0.0.1:8080/v1", model="qwen3-4b")`.
 
 ### 12.2 Python 서비스에 in-process 임베드
 
@@ -592,7 +597,7 @@ async def answer(messages: list[dict]) -> str:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None,
-        lambda: engine.generate_chat_registered_gguf(STORE, "qwen05b", messages, max_tokens=256),
+        lambda: engine.generate_chat_registered_gguf(STORE, "qwen3-4b", messages, max_tokens=256),
     )
 ```
 
@@ -613,7 +618,7 @@ let cache = Arc::new(SessionCache::new());
 let cache = cache.clone();
 let text = tokio::task::spawn_blocking(move || -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let registry = ModelRegistry::open("./models")?;
-    let session = cache.get_or_load(&registry, "qwen05b", DevicePreference::Auto)?;
+    let session = cache.get_or_load(&registry, "qwen3-4b", DevicePreference::Auto)?;
     let mut session = session.lock().unwrap();
     let tokens = session.tokenizer.encode("The capital of France is", true)?;
     let mut config = GenerationConfig::default();
@@ -695,7 +700,7 @@ maturin build --release          # dist/ 에 abi3 휠
 
 ### 실모델 스모크 (수동)
 
-코드 변경 후 실모델 회귀는 [2장](#2-빠른-시작)의 CLI 흐름 그대로 — 0.5B 급 GGUF 를 pull 해
+코드 변경 후 실모델 회귀는 [2장](#2-빠른-시작)의 CLI 흐름 그대로 — 소형 GGUF 를 pull 해
 `serve` 를 띄우고 채팅 완성(비스트리밍·스트리밍)을 호출한다. `temperature: 0.0` + 고정 `seed` 로
 같은 입력의 출력 안정성까지 확인한다.
 
@@ -722,7 +727,7 @@ rust_ai_serving_engine/
       src/
         lib.rs                            # load_gguf_decoder · GGUF EOS 추출
         llama_gguf.rs                     # Llama·Mistral GGUF 디코더
-        qwen2_gguf.rs                     # Qwen2 GGUF 디코더
+        qwen3_gguf.rs                     # Qwen3 GGUF 디코더
         chat.rs                           # ChatTemplate (ChatML·Llama3·Mistral) + 렌더 테스트
         session.rs                        # ModelSession / SessionCache
         tokenizer.rs                      # LocalTokenizer (tokenizer.json)
