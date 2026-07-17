@@ -1,6 +1,6 @@
 ﻿[package]
 name = "rust-ai-serving-engine-models"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -14,6 +14,8 @@ metal = ["rust-ai-serving-engine-core/metal", "candle-core/metal"]
 
 [dependencies]
 candle-core.workspace = true
+candle-nn.workspace = true
 candle-transformers.workspace = true
+rayon.workspace = true
 rust-ai-serving-engine-core = { path = "../rust_ai_serving_engine_core" }
 tokenizers.workspace = true

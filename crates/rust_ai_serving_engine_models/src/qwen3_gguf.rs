@@ -5,12 +5,12 @@ use std::{
 };
 
 use candle_core::{Tensor, quantized::gguf_file};
-use candle_transformers::models::quantized_qwen3::ModelWeights;
 use rust_ai_serving_engine_core::{
     EngineError, ModelAdapter, ModelFormat, Result, RuntimeDevice, TokenDecoder,
 };
 
 use crate::gguf_eos_token;
+use crate::qwen3_model::ModelWeights;
 
 /// Qwen3 GGUF adapter backed by Candle's quantized Qwen3 implementation.
 #[derive(Debug, Default)]

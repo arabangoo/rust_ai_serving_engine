@@ -7,6 +7,7 @@
 mod chat;
 mod llama_gguf;
 mod qwen3_gguf;
+mod qwen3_model;
 mod session;
 mod tokenizer;
 

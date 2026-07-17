@@ -1,0 +1,16 @@
+# x86-64 빌드에 AVX2 + FMA 를 기본 활성화한다.
+#
+# candle 의 양자화 k-quant 고속 커널은 런타임 감지가 아니라 컴파일 타임
+# `#[cfg(target_feature = "avx2")]` 게이트다. 이 플래그 없이 빌드하면 전부
+# 스칼라 폴백으로 컴파일되어 CPU 추론(프리필·디코드)이 수 배 느려진다.
+# 기준선 = 2013년 이후의 x86-64 CPU (llama.cpp 배포 바이너리와 같은 선택).
+# aarch64 는 NEON 이 기본 내장이라 플래그가 필요 없다.
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+avx2,+fma"]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+avx2,+fma"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-feature=+avx2,+fma"]

@@ -2503,7 +2503,7 @@ dependencies = [
 
 [[package]]
 name = "rust-ai-serving-engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "clap",
  "rust-ai-serving-engine-api",
@@ -2514,7 +2514,7 @@ dependencies = [
 
 [[package]]
 name = "rust-ai-serving-engine-api"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "rust-ai-serving-engine-core",
@@ -2527,7 +2527,7 @@ dependencies = [
 
 [[package]]
 name = "rust-ai-serving-engine-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "candle-core",
  "hf-hub",
@@ -2541,17 +2541,19 @@ dependencies = [
 
 [[package]]
 name = "rust-ai-serving-engine-models"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "candle-core",
+ "candle-nn",
  "candle-transformers",
+ "rayon",
  "rust-ai-serving-engine-core",
  "tokenizers",
 ]
 
 [[package]]
 name = "rust-ai-serving-engine-python"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyo3",
  "rust-ai-serving-engine-core",
