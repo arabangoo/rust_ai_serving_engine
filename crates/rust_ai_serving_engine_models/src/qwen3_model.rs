@@ -27,6 +27,8 @@ use candle_transformers::quantized_nn::RmsNorm;
 use candle_transformers::utils::repeat_kv;
 use rayon::prelude::*;
 
+use crate::profiling;
+
 /// Prompt lengths at or above this use the dequantize + GEMM path.
 /// Below it, the per-row quantized kernel is cheaper than paying the
 /// fixed cost of one full weight dequantization. Break-even measured on a
@@ -163,10 +165,20 @@ impl HybridQMatMul {
         };
         if seq >= PREFILL_GEMM_MIN_SEQ && x.device().is_cpu() {
             // Prefill: dequantize the weights once, GEMM all rows against them.
+            let probe = profiling::probe();
             let w = self.weight.dequantize(x.device())?; // [out, in] f32
+            profiling::commit(&profiling::phases().gemm_dequant_ns, probe);
+            let probe = profiling::probe();
             let (b, l, hidden) = x.dims3()?;
             let flat = x.reshape((b * l, hidden))?;
-            flat.matmul(&w.t()?)?.reshape((b, l, ()))
+            let out = flat.matmul(&w.t()?)?.reshape((b, l, ()));
+            profiling::commit(&profiling::phases().gemm_matmul_ns, probe);
+            out
+        } else if seq == 1 {
+            let probe = profiling::probe();
+            let out = self.quantized.forward(x);
+            profiling::commit(&profiling::phases().decode_matvec_ns, probe);
+            out
         } else {
             self.quantized.forward(x)
         }
@@ -435,6 +447,7 @@ impl AttentionWeights {
 
                 let kv_len = rc.len();
                 let q_len = self.num_heads * self.head_dim;
+                let probe = profiling::probe();
                 let ctx = causal_decode_f32_interleaved(
                     &q_data[..q_len],
                     rc.data(),
@@ -444,6 +457,7 @@ impl AttentionWeights {
                     kv_len,
                     scale,
                 )?;
+                profiling::commit(&profiling::phases().decode_attn_ns, probe);
 
                 let ctx = ctx.reshape((b, l, self.hidden_size))?;
                 self.o_proj.forward(&ctx)
@@ -489,6 +503,7 @@ impl AttentionWeights {
                         Storage::Cpu(cpu) => &cpu.as_slice::<f32>()?[vl.start_offset()..],
                         _ => candle_core::bail!("Expected CPU"),
                     };
+                    let probe = profiling::probe();
                     let out = blocked_causal_prefill_f32(
                         q_d,
                         k_d,
@@ -499,6 +514,7 @@ impl AttentionWeights {
                         self.head_dim,
                         scale,
                     );
+                    profiling::commit(&profiling::phases().attn_blocked_ns, probe);
                     let ctx =
                         Tensor::from_vec(out, (self.num_heads, l, self.head_dim), x.device())?
                             .transpose(0, 1)?
@@ -514,6 +530,7 @@ impl AttentionWeights {
                     let k = kv_k.contiguous()?;
                     let v = kv_v.contiguous()?;
 
+                    let probe = profiling::probe();
                     let ctx = flash_attn::<f32>(
                         &q,
                         &k,
@@ -523,6 +540,7 @@ impl AttentionWeights {
                         None,
                         None,
                     )?;
+                    profiling::commit(&profiling::phases().attn_flash_ns, probe);
                     let ctx = ctx.transpose(1, 2)?;
                     let ctx = ctx.reshape((b, l, self.hidden_size))?;
                     self.o_proj.forward(&ctx)
@@ -714,6 +732,7 @@ impl ModelWeights {
     }
 
     pub fn forward(&mut self, input: &Tensor, offset: usize) -> Result<Tensor> {
+        let probe = profiling::probe();
         let (b, l) = input.dims2()?;
         let mut h = self.embed_tokens.forward(input)?;
         // Mask materialization is skipped on CPU (kernels apply causality).
@@ -727,7 +746,17 @@ impl ModelWeights {
         }
         let h = self.norm.forward(&h)?;
         let last_hidden = h.narrow(1, l - 1, 1)?;
-        self.lm_head.forward(&last_hidden)?.squeeze(1)
+        let logits = self.lm_head.forward(&last_hidden)?.squeeze(1);
+        let phases = profiling::phases();
+        if l == 1 {
+            profiling::commit(&phases.decode_forward_ns, probe);
+            profiling::count(&phases.decode_steps, 1);
+        } else {
+            profiling::commit(&phases.prefill_forward_ns, probe);
+            profiling::count(&phases.prefill_calls, 1);
+            profiling::count(&phases.prefill_tokens, l as u64);
+        }
+        logits
     }
 
     pub fn clear_kv_cache(&mut self) {

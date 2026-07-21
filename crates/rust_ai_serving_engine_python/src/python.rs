@@ -450,6 +450,18 @@ fn unload_models() -> PyResult<()> {
     Ok(())
 }
 
+/// Returns forward-pass phase counters as a JSON string.
+///
+/// Profiling is collected only when the process was started with
+/// RASE_PROFILE=1; otherwise every counter stays zero (and the default
+/// inference path takes no timing probes). `reset=True` zeroes the counters
+/// after reading, so successive calls delimit measurement windows.
+#[pyfunction]
+#[pyo3(signature = (reset=true))]
+fn profiling_snapshot(reset: bool) -> PyResult<String> {
+    Ok(rust_ai_serving_engine_models::profiling::snapshot(reset))
+}
+
 fn with_eos(mut config: GenerationConfig, eos_token: Option<u32>) -> GenerationConfig {
     if let Some(eos) = eos_token {
         if !config.stop_tokens.contains(&eos) {
@@ -478,5 +490,6 @@ fn rust_ai_serving_engine(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(unload_models, module)?)?;
+    module.add_function(wrap_pyfunction!(profiling_snapshot, module)?)?;
     Ok(())
 }

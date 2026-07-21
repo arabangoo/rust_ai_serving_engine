@@ -6,6 +6,7 @@
 
 mod chat;
 mod llama_gguf;
+pub mod profiling;
 mod qwen3_gguf;
 mod qwen3_model;
 mod session;

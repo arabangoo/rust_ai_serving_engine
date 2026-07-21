@@ -13,7 +13,7 @@
 
 1. Attention Is All You Need (Transformer 구조의 원전) - https://arxiv.org/abs/1706.03762
 2. LLaMA: Open and Efficient Foundation Language Models (Llama 계열 디코더 구조) - https://arxiv.org/abs/2302.13971
-3. Qwen3 Technical Report (실모델 종단 간 검증에 사용한 Qwen3 계열) - https://arxiv.org/abs/2505.09388
+3. Efficiently Scaling Transformer Inference (추론을 프리필·디코드 국면으로 분해하고 연산량·메모리 대역폭 상한으로 성능을 분석하는 모델의 원전. RASE_PROFILE 구간 프로파일링의 이론 근거) - https://arxiv.org/abs/2211.05102
 4. The Case for 4-bit Precision: k-bit Inference Scaling Laws (4비트 양자화 추론의 근거) - https://arxiv.org/abs/2212.09720
 5. Efficient Memory Management for Large Language Model Serving with PagedAttention (LLM 서빙과 KV 캐시 관리) - https://arxiv.org/abs/2309.06180
 
@@ -507,7 +507,7 @@ pip install "git+https://github.com/arabangoo/rust_ai_serving_engine"
 ```python
 import rust_ai_serving_engine as engine
 
-engine.__version__                                  # "0.1.0"
+engine.__version__                                  # 예: "0.1.3"
 engine.probe_runtime(device="auto")                 # 장치 선택 + 텐서 스모크 테스트
 
 # 모델 수명주기 (store = 모델 저장소 폴더)
@@ -536,7 +536,52 @@ engine.generate_chat_stream_registered_gguf(store, id, messages, on_delta,
 
 # 생성 — 파일 직접 지정 (레지스트리 없이 1회성)
 engine.generate_llama_gguf(weights_path, tokenizer_path, prompt, ...)
+
+# 성능 프로파일링 — 포워드 패스 구간 카운터 (아래 "성능 프로파일링" 절)
+engine.profiling_snapshot(reset=True)               # JSON 문자열
 ```
+
+### 성능 프로파일링 (RASE_PROFILE)
+
+포워드 패스의 구간별 소요 시간을 나노초 카운터로 집계하는 진단 표면이다.
+프리필을 "양자화 선형 GEMM 작업"과 "어텐션 커널 작업"으로, 디코드를 "양자화 matvec"과
+"융합 어텐션"으로 분해해, 커널 최적화나 GPU 오프로드의 이득 상한을 코드 작성 전에
+수치로 판단할 수 있게 한다.
+
+- **켜는 법**: 프로세스 시작 전에 환경변수 `RASE_PROFILE=1`. 프로세스당 1회만 읽으므로
+  실행 중 변경은 무효다. 꺼져 있으면(기본) 타이머를 아예 잡지 않아 추론 경로 비용이 0이고,
+  계측은 출력에 영향을 주지 않는다 (같은 시드는 켜고 꺼도 같은 출력).
+- **읽는 법**: `profiling_snapshot(reset=True)` 가 카운터 전체를 JSON 문자열로 반환한다.
+  `reset=True` 는 읽은 뒤 0으로 초기화하므로 연속 호출 사이가 곧 측정 창이 된다.
+- **적용 범위**: Qwen3 GGUF 디코더의 CPU 경로. 다른 디코더·장치에서는 카운터가 0에 머문다.
+
+| 카운터 | 의미 |
+|---|---|
+| `prefill_calls` / `prefill_tokens` | 시퀀스 길이 2 이상 forward 호출 수 / 처리한 프롬프트 토큰 수 |
+| `prefill_forward_ns` | 프리필 forward 전체 벽시계 (임베딩부터 logits 까지) |
+| `gemm_dequant_ns` / `gemm_matmul_ns` | 하이브리드 GEMM 경로의 역양자화 / f32 행렬곱 시간 |
+| `attn_blocked_ns` / `attn_flash_ns` | 프리필 어텐션 커널 시간 (블록형 / candle flash) |
+| `decode_steps` / `decode_forward_ns` | 단일 토큰 forward 수 / 벽시계 (디코드 tok/s 계산용) |
+| `decode_matvec_ns` / `decode_attn_ns` | 디코드의 양자화 matvec / 융합 어텐션 시간 |
+
+```python
+import json
+import os
+
+os.environ["RASE_PROFILE"] = "1"      # 반드시 첫 추론 전에
+import rust_ai_serving_engine as engine
+
+engine.generate_chat_registered_gguf("./models", "qwen3-4b", [...], max_tokens=256)
+p = json.loads(engine.profiling_snapshot(reset=True))
+prefill = p["prefill_forward_ns"] / 1e9
+gemm = (p["gemm_dequant_ns"] + p["gemm_matmul_ns"]) / 1e9
+attn = (p["attn_blocked_ns"] + p["attn_flash_ns"]) / 1e9
+print(f"prefill {prefill:.1f}s = GEMM {gemm:.1f}s + attention {attn:.1f}s + etc")
+print(f"decode {p['decode_steps'] / (p['decode_forward_ns'] / 1e9):.1f} tok/s")
+```
+
+주의: `decode_matvec_ns` 는 시퀀스 길이 1 선형 호출 전체를 세므로, 프리필 마지막의
+lm_head 호출(호출당 1회)도 포함된다. 디코드가 수백 토큰이면 오차는 1% 미만이다.
 
 ### 스트리밍 통합 레시피
 
@@ -755,6 +800,8 @@ rust_ai_serving_engine/
         lib.rs                            # load_gguf_decoder · GGUF EOS 추출
         llama_gguf.rs                     # Llama·Mistral GGUF 디코더
         qwen3_gguf.rs                     # Qwen3 GGUF 디코더
+        qwen3_model.rs                    # Qwen3 forward (하이브리드 프리필 GEMM + 블록 어텐션)
+        profiling.rs                      # RASE_PROFILE 구간 카운터 (11장 성능 프로파일링)
         chat.rs                           # ChatTemplate (ChatML·Llama3·Mistral) + 렌더 테스트
         session.rs                        # ModelSession / SessionCache
         tokenizer.rs                      # LocalTokenizer (tokenizer.json)
