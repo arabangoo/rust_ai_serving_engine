@@ -36,6 +36,10 @@ pub struct Phases {
     pub gemm_dequant_ns: AtomicU64,
     /// f32 GEMM step of the hybrid GEMM path.
     pub gemm_matmul_ns: AtomicU64,
+    /// wgpu offloaded GEMM wall time (upload + dispatch + readback).
+    pub gemm_gpu_ns: AtomicU64,
+    /// Number of GEMM calls served by the GPU path.
+    pub gemm_gpu_calls: AtomicU64,
     /// Blocked causal prefill attention kernel.
     pub attn_blocked_ns: AtomicU64,
     /// Candle flash prefill attention kernel (short prefill / continuation).
@@ -57,6 +61,8 @@ pub fn phases() -> &'static Phases {
         prefill_forward_ns: AtomicU64::new(0),
         gemm_dequant_ns: AtomicU64::new(0),
         gemm_matmul_ns: AtomicU64::new(0),
+        gemm_gpu_ns: AtomicU64::new(0),
+        gemm_gpu_calls: AtomicU64::new(0),
         attn_blocked_ns: AtomicU64::new(0),
         attn_flash_ns: AtomicU64::new(0),
         decode_steps: AtomicU64::new(0),
@@ -106,6 +112,8 @@ pub fn snapshot(reset: bool) -> String {
             "\"prefill_forward_ns\":{},",
             "\"gemm_dequant_ns\":{},",
             "\"gemm_matmul_ns\":{},",
+            "\"gemm_gpu_ns\":{},",
+            "\"gemm_gpu_calls\":{},",
             "\"attn_blocked_ns\":{},",
             "\"attn_flash_ns\":{},",
             "\"decode_steps\":{},",
@@ -119,6 +127,8 @@ pub fn snapshot(reset: bool) -> String {
         read(&p.prefill_forward_ns),
         read(&p.gemm_dequant_ns),
         read(&p.gemm_matmul_ns),
+        read(&p.gemm_gpu_ns),
+        read(&p.gemm_gpu_calls),
         read(&p.attn_blocked_ns),
         read(&p.attn_flash_ns),
         read(&p.decode_steps),

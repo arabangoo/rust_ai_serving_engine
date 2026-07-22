@@ -27,7 +27,7 @@ use candle_transformers::quantized_nn::RmsNorm;
 use candle_transformers::utils::repeat_kv;
 use rayon::prelude::*;
 
-use crate::profiling;
+use crate::{gpu_gemm, profiling};
 
 /// Prompt lengths at or above this use the dequantize + GEMM path.
 /// Below it, the per-row quantized kernel is cheaper than paying the
@@ -144,18 +144,146 @@ fn blocked_causal_prefill_f32(
     out
 }
 
+/// GQA-aware fused decode attention over the interleaved KV cache.
+///
+/// candle's decode kernel splits work by query head, so with `rk` query
+/// heads per KV head the same K/V rows are streamed `rk` times (4x traffic
+/// for Qwen3's 32/8 layout — candle only specializes rk == 2). This kernel
+/// parallelizes over KV heads instead: each task reads its K/V rows once
+/// and updates all `rk` query heads of the group in the same pass.
+fn gqa_decode_f32_interleaved(
+    q: &[f32],
+    kv: &[f32],
+    h_q: usize,
+    h_kv: usize,
+    d: usize,
+    kv_len: usize,
+    scale: f32,
+) -> Vec<f32> {
+    let rk = h_q / h_kv;
+    let kv_head_stride = 2 * d;
+    let kv_seq_stride = h_kv * kv_head_stride;
+    let mut out = vec![0f32; h_q * d];
+    out.par_chunks_mut(rk * d)
+        .enumerate()
+        .for_each(|(kv_h, out_grp)| {
+            let head_off = kv_h * kv_head_stride;
+            let mut m = vec![f32::NEG_INFINITY; rk];
+            let mut ssum = vec![0f32; rk];
+            let mut acc = vec![0f32; rk * d];
+            for pos in 0..kv_len {
+                let base = pos * kv_seq_stride + head_off;
+                let k_row = &kv[base..base + d];
+                let v_row = &kv[base + d..base + 2 * d];
+                for j in 0..rk {
+                    let q_row = &q[(kv_h * rk + j) * d..(kv_h * rk + j + 1) * d];
+                    let mut score = 0f32;
+                    // SAFETY: q_row/k_row are both exactly `d` long.
+                    unsafe { f32::vec_dot(q_row.as_ptr(), k_row.as_ptr(), &mut score, d) };
+                    score *= scale;
+                    online_softmax_step(
+                        score,
+                        &mut m[j],
+                        &mut ssum[j],
+                        &mut acc[j * d..(j + 1) * d],
+                        v_row,
+                    );
+                }
+            }
+            for j in 0..rk {
+                let inv = if ssum[j] > 0.0 { 1.0 / ssum[j] } else { 0.0 };
+                for t in 0..d {
+                    out_grp[j * d + t] = acc[j * d + t] * inv;
+                }
+            }
+        });
+    out
+}
+
 /// Quantized linear that picks its kernel by sequence length.
 #[derive(Debug, Clone)]
 struct HybridQMatMul {
     quantized: QMatMul,
     weight: Arc<QTensor>,
+    /// Lazily uploaded GPU-resident weights (None = 이 행렬은 CPU 경로).
+    gpu_weight: Arc<std::sync::OnceLock<Option<gpu_gemm::GpuWeight>>>,
 }
 
 impl HybridQMatMul {
     fn from_qtensor(weight: QTensor) -> Result<Self> {
         let weight = Arc::new(weight);
         let quantized = QMatMul::from_arc(weight.clone())?;
-        Ok(Self { quantized, weight })
+        Ok(Self {
+            quantized,
+            weight,
+            gpu_weight: Arc::new(std::sync::OnceLock::new()),
+        })
+    }
+
+    /// CPU+GPU 하이브리드 분할 프리필 GEMM. 활성값 행(m)을 둘로 갈라 GPU 가
+    /// 앞쪽을, CPU(dequant + f32 GEMM)가 뒤쪽을 **동시에** 계산한다 — 각자
+    /// 단독으로는 패리티 속도라, 병렬 합산으로 GEMM 벽시계를 절반 근처로
+    /// 내리는 것이 목적. GPU 미가용·비대상 dtype 이면 None(전량 CPU 폴백),
+    /// GPU 런타임 실패 시 그 몫만 CPU 로 재계산해 정확성을 지킨다.
+    fn forward_gpu(&self, x: &Tensor) -> Result<Option<Tensor>> {
+        let Some(ctx) = gpu_gemm::context() else {
+            return Ok(None);
+        };
+        if x.dtype() != DType::F32 {
+            return Ok(None);
+        }
+        let gpu_weight = self.gpu_weight.get_or_init(|| ctx.upload_weight(&self.weight));
+        let Some(gpu_weight) = gpu_weight.as_ref() else {
+            return Ok(None);
+        };
+        let (b, l, hidden) = x.dims3()?;
+        let m = b * l;
+        let flat = x.reshape((m, hidden))?.contiguous()?;
+        let (guard, layout) = flat.storage_and_layout();
+        let a: &[f32] = match &*guard {
+            Storage::Cpu(cpu) => {
+                let slice = cpu.as_slice::<f32>()?;
+                &slice[layout.start_offset()..layout.start_offset() + m * hidden]
+            }
+            _ => return Ok(None),
+        };
+
+        // 분할비: CPU 몫에는 행수와 무관한 고정비(가중치 전체 역양자화)가 있어
+        // GPU 에 60% 를 주는 것이 실측상 균형점에 가깝다.
+        let m_gpu = (m * 3 / 5 / 16) * 16; // GPU 타일(16행) 정렬
+        if m_gpu == 0 {
+            return Ok(None); // 너무 짧은 프리필은 전량 CPU
+        }
+        let probe = profiling::probe();
+        let (gpu_out, cpu_out) = std::thread::scope(|s| {
+            let gpu_task = s.spawn(|| ctx.gemm(gpu_weight, &a[..m_gpu * hidden], m_gpu));
+            // CPU 몫 (뒤쪽 행) — 기존 dequant + f32 GEMM 경로
+            let cpu_res: Result<Tensor> = (|| {
+                let w = self.weight.dequantize(x.device())?;
+                let a_cpu = Tensor::from_slice(
+                    &a[m_gpu * hidden..],
+                    (m - m_gpu, hidden),
+                    x.device(),
+                )?;
+                a_cpu.matmul(&w.t()?)
+            })();
+            (gpu_task.join(), cpu_res)
+        });
+        let cpu_out = cpu_out?;
+        let n = gpu_weight.out_features();
+        let mut merged = match gpu_out {
+            Ok(Some(v)) => v,
+            _ => {
+                // GPU 몫 실패 → 같은 행을 CPU 로 재계산 (unhealthy 마킹은 gemm 내부)
+                let w = self.weight.dequantize(x.device())?;
+                let a_gpu = Tensor::from_slice(&a[..m_gpu * hidden], (m_gpu, hidden), x.device())?;
+                a_gpu.matmul(&w.t()?)?.flatten_all()?.to_vec1::<f32>()?
+            }
+        };
+        merged.extend(cpu_out.flatten_all()?.to_vec1::<f32>()?);
+        let tensor = Tensor::from_vec(merged, (b, l, n), x.device())?;
+        gpu_gemm::commit_gpu_probe(probe);
+        Ok(Some(tensor))
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -164,7 +292,11 @@ impl HybridQMatMul {
             _ => 1,
         };
         if seq >= PREFILL_GEMM_MIN_SEQ && x.device().is_cpu() {
-            // Prefill: dequantize the weights once, GEMM all rows against them.
+            // Prefill 1순위: wgpu 오프로드 (양자화 가중치 GPU 상주 + 셰이더 역양자화)
+            if let Some(out) = self.forward_gpu(x)? {
+                return Ok(out);
+            }
+            // Prefill 2순위(CPU): dequantize the weights once, GEMM all rows.
             let probe = profiling::probe();
             let w = self.weight.dequantize(x.device())?; // [out, in] f32
             profiling::commit(&profiling::phases().gemm_dequant_ns, probe);
@@ -448,15 +580,30 @@ impl AttentionWeights {
                 let kv_len = rc.len();
                 let q_len = self.num_heads * self.head_dim;
                 let probe = profiling::probe();
-                let ctx = causal_decode_f32_interleaved(
-                    &q_data[..q_len],
-                    rc.data(),
-                    self.num_heads,
-                    self.num_kv_heads,
-                    self.head_dim,
-                    kv_len,
-                    scale,
-                )?;
+                // rk > 2 (예: Qwen3-4B 의 32/8=4) 만 KV 1회 읽기 커널을 쓴다.
+                // rk == 2 는 candle 의 gqa2 특수화가 더 빠름을 실측 확인 (2026-07-21).
+                let ctx = if self.num_kv_groups > 2 {
+                    let out = gqa_decode_f32_interleaved(
+                        &q_data[..q_len],
+                        rc.data(),
+                        self.num_heads,
+                        self.num_kv_heads,
+                        self.head_dim,
+                        kv_len,
+                        scale,
+                    );
+                    Tensor::from_vec(out, (self.num_heads, 1usize, self.head_dim), x.device())?
+                } else {
+                    causal_decode_f32_interleaved(
+                        &q_data[..q_len],
+                        rc.data(),
+                        self.num_heads,
+                        self.num_kv_heads,
+                        self.head_dim,
+                        kv_len,
+                        scale,
+                    )?
+                };
                 profiling::commit(&profiling::phases().decode_attn_ns, probe);
 
                 let ctx = ctx.reshape((b, l, self.hidden_size))?;
@@ -867,6 +1014,30 @@ mod tests {
             max_diff < 1e-4,
             "blocked kernel diverges from candle flash: max_diff={max_diff}"
         );
+    }
+
+    /// The GQA decode kernel must match candle's decode kernel exactly
+    /// (same math, different work split).
+    #[test]
+    fn gqa_decode_matches_candle_kernel() {
+        let (h_q, h_kv, d, kv_len) = (8usize, 2usize, 16usize, 37usize); // rk = 4
+        let scale = 0.31f32;
+        let fill = |n: usize, phase: f32| -> Vec<f32> {
+            (0..n).map(|i| ((i as f32) * 0.53 + phase).sin()).collect()
+        };
+        let q = fill(h_q * d, 0.4);
+        let kv = fill(kv_len * h_kv * 2 * d, 1.9); // (S, H_kv, 2D) interleaved
+        let got = gqa_decode_f32_interleaved(&q, &kv, h_q, h_kv, d, kv_len, scale);
+        let want: Vec<f32> =
+            causal_decode_f32_interleaved(&q, &kv, h_q, h_kv, d, kv_len, scale)
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+        for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-5, "mismatch at {i}: {a} vs {b}");
+        }
     }
 
     /// The GEMM prefill path must agree with the quantized kernel within the

@@ -5,11 +5,13 @@
 //! Qwen3-compatible GGUF files use Candle's quantized Qwen3 decoder.
 
 mod chat;
+pub mod gpu_gemm;
 mod llama_gguf;
 pub mod profiling;
 mod qwen3_gguf;
 mod qwen3_model;
 mod session;
+pub mod threading;
 mod tokenizer;
 
 pub use chat::{ChatMessage, ChatTemplate};
@@ -29,6 +31,8 @@ pub fn load_gguf_decoder(
     weights: impl AsRef<Path>,
     runtime: &RuntimeDevice,
 ) -> Result<Box<dyn TokenDecoder>> {
+    // 첫 추론 전에 디코드 스레드 기본값을 확정한다 (하이브리드 CPU 낙오자 회피).
+    threading::apply_decode_thread_default();
     match architecture.to_ascii_lowercase().as_str() {
         "llama" | "llama2" | "llama3" | "llama-gguf" | "mistral" | "mixtral" => {
             Ok(Box::new(LlamaGgufDecoder::load(weights, runtime)?))

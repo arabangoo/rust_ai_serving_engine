@@ -13,9 +13,14 @@ cuda = ["rust-ai-serving-engine-core/cuda", "candle-core/cuda"]
 metal = ["rust-ai-serving-engine-core/metal", "candle-core/metal"]
 
 [dependencies]
+bytemuck = "1"
+half = "2"
 candle-core.workspace = true
 candle-nn.workspace = true
 candle-transformers.workspace = true
+num_cpus = "1"
+pollster = "0.4"
 rayon.workspace = true
+wgpu = "30"
 rust-ai-serving-engine-core = { path = "../rust_ai_serving_engine_core" }
 tokenizers.workspace = true

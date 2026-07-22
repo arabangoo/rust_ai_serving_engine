@@ -450,6 +450,14 @@ fn unload_models() -> PyResult<()> {
     Ok(())
 }
 
+/// Reports the wgpu prefill-offload status: "active: <adapter>",
+/// "fallback(runtime-failure): <adapter>", or "inactive" (no usable GPU,
+/// software adapter excluded, or RASE_GPU=0).
+#[pyfunction]
+fn gpu_info() -> PyResult<String> {
+    Ok(rust_ai_serving_engine_models::gpu_gemm::status())
+}
+
 /// Returns forward-pass phase counters as a JSON string.
 ///
 /// Profiling is collected only when the process was started with
@@ -491,5 +499,6 @@ fn rust_ai_serving_engine(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_function(wrap_pyfunction!(unload_models, module)?)?;
     module.add_function(wrap_pyfunction!(profiling_snapshot, module)?)?;
+    module.add_function(wrap_pyfunction!(gpu_info, module)?)?;
     Ok(())
 }

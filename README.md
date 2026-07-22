@@ -402,6 +402,46 @@ OpenAI 호환 `stop`(문자열 하나 또는 배열)을 지원한다. 생성 텍
 - `temperature > 0` + `top_k` — 고정 시드(`seed`) 기반 확률 샘플링. 같은 시드는 같은 출력
 - 다중 바이트 문자(한글 등)가 토큰 경계에 걸치면 완성될 때까지 방출을 보류한다 — 깨진 문자가 스트림에 나가지 않는다
 
+### wgpu 프리필 GEMM 오프로드 (실험적, RASE_GPU=1 옵트인)
+
+프리필의 양자화 선형층(Q4_K)을 GPU 로 오프로드하는 실험 경로다. 양자화 가중치를
+행렬 단위로 GPU 에 상주시키고 WGSL 셰이더 안에서 역양자화하며 곱한다 (역양자화된
+f32 를 매 호출 복사하면 수 GB 라 손해이기 때문). 디코드는 메모리 대역폭 바운드라
+내장 GPU 이득이 없어 항상 CPU 에 남는다.
+
+- **켜는 법**: `RASE_GPU=1` (기본 비활성). 현재 f32 셰이더는 통합 GPU 에서 CPU
+  하이브리드 GEMM 과 비슷한 속도라 기본값이 꺼져 있다. f16 셰이더 경로가 CPU 를
+  상회하면 기본 활성으로 바뀔 예정이다
+- **안전장치**: 소프트웨어 어댑터(WARP·llvmpipe 류, DeviceType Cpu)는 자동 제외 /
+  런타임 실패(디바이스 유실·매핑 실패) 시 그 즉시 전 과정이 CPU 경로로 복귀 /
+  Q4_K 외 dtype(Q6_K 등)과 GPU 부재 환경은 행렬 단위로 CPU 폴백
+- **진단**: Python `gpu_info()` 가 `active: <어댑터>` / `fallback(runtime-failure)` /
+  `inactive` 를 반환한다. 프로파일링 카운터 `gemm_gpu_ns`·`gemm_gpu_calls` 로
+  오프로드 몫을 계측한다 (위 성능 프로파일링 절)
+- **수치 특성**: GPU 역양자화 GEMM 은 연산 순서 차이로 CPU 와 비트 동일하지 않지만,
+  로짓 허용오차 내에서 일치한다 (같은 시드 greedy 디코드 출력 일치를 실측 확인)
+
+### 디코드 스레드 정책 (CANDLE_NUM_THREADS)
+
+디코드(토큰 생성)의 양자화 matvec 과 융합 어텐션은 `CANDLE_NUM_THREADS` 로 크기가 정해지는
+배리어 풀에서 정적 균등 분할로 돈다. 하이브리드 CPU(성능 코어 + 효율 코어 + 저전력 효율 코어
+혼합)에서는 매 배리어가 가장 느린 코어를 기다리게 되어, 코어를 전부 쓰는 기본값이 오히려
+디코드 처리량을 반토막 낸다 (16코어 Core Ultra 7 255H 실측: Qwen3-4B 디코드가 16스레드
+10 tok/s, 12스레드 20 tok/s. 절벽은 저전력 코어가 풀에 들어오는 지점에서 생긴다).
+
+엔진은 첫 모델 로드 시 다음 기본값을 적용한다:
+
+- `CANDLE_NUM_THREADS` 가 이미 설정돼 있으면 그대로 존중한다 (기본값 미적용)
+- 미설정이고 물리 코어가 12개 이상이면 `물리 코어 - 4` 로 설정한다. 디코드는 메모리
+  대역폭 바운드라 코어 수 이하에서 포화하므로, 균질 다코어 CPU 에서 이 상한의 손실은 작고
+  하이브리드 CPU 에서는 낙오자 페널티가 사라진다
+- 물리 코어 12개 미만이면 손대지 않는다
+
+프리필 경로(하이브리드 GEMM 의 f32 행렬곱, 블록형 어텐션)는 별도 rayon 풀
+(`RAYON_NUM_THREADS`, 기본 = 전체 물리 코어)을 쓰므로 이 정책의 영향을 받지 않는다.
+스레드 수는 작업 분할만 바꾸고 출력 원소별 계산 주체는 동일하므로, 같은 시드의 출력은
+스레드 수와 무관하게 같다.
+
 ---
 
 ## 9. HTTP API (OpenAI 호환)
@@ -802,6 +842,8 @@ rust_ai_serving_engine/
         qwen3_gguf.rs                     # Qwen3 GGUF 디코더
         qwen3_model.rs                    # Qwen3 forward (하이브리드 프리필 GEMM + 블록 어텐션)
         profiling.rs                      # RASE_PROFILE 구간 카운터 (11장 성능 프로파일링)
+        threading.rs                      # 디코드 스레드 기본 정책 (8장 디코드 스레드 정책)
+        gpu_gemm.rs                       # wgpu 프리필 GEMM 오프로드 (8장, RASE_GPU=1 옵트인)
         chat.rs                           # ChatTemplate (ChatML·Llama3·Mistral) + 렌더 테스트
         session.rs                        # ModelSession / SessionCache
         tokenizer.rs                      # LocalTokenizer (tokenizer.json)
